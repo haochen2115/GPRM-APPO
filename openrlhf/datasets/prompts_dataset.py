@@ -47,7 +47,11 @@ class PromptDataset(Dataset):
         self.prompts = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
             prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
-            self.prompts.append(prompt)
+            if(len(data[input_key])<2):
+                print(f"🚨 🚨 🚨 🚨 🚨 请注意有空数据！")
+                continue
+            else:
+                self.prompts.append(prompt)
 
     def __len__(self):
         length = len(self.prompts)

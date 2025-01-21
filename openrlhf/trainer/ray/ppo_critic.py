@@ -1,6 +1,6 @@
 import math
 import os
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 
 import ray
 import torch
@@ -150,7 +150,7 @@ class CriticModelRayActor(BasePPORole):
     def forward(
         self,
         sequences: torch.LongTensor,
-        num_actions: Optional[Union[int, list[int]]] = None,
+        num_actions: Optional[Union[int, List[int]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         packed_seq_lens=None,
     ) -> torch.Tensor:

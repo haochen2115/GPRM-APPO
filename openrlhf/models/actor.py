@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 import torch
 import torch.distributed as dist
@@ -183,11 +183,11 @@ class Actor(nn.Module):
     def forward(
         self,
         sequences: torch.LongTensor,
-        num_actions: Optional[Union[int, list[int]]] = None,
+        num_actions: Optional[Union[int, List[int]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         return_output=False,
         ring_attn_group: Optional[dist.ProcessGroup] = None,
-        packed_seq_lens: Optional[list[int]] = None,
+        packed_seq_lens: Optional[List[int]] = None,
     ) -> torch.Tensor:
         """Returns action log probs"""
         if not self.packing_samples:
@@ -218,7 +218,7 @@ class Actor(nn.Module):
         if not self.packing_samples:
             action_log_probs = log_probs[:, -num_actions:]
         else:
-            assert isinstance(num_actions, list) and len(num_actions) == len(packed_seq_lens)
+            assert isinstance(num_actions, List) and len(num_actions) == len(packed_seq_lens)
             action_log_probs = []
             offset = 0
             for num_action, seq_len in zip(num_actions, packed_seq_lens):

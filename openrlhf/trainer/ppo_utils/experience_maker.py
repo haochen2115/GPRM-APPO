@@ -10,21 +10,22 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from openrlhf.models.actor import Actor
-from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
+from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples, compute_prm_reward
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
+from openrlhf.utils.utils import convert_token_to_id
 
 logger = init_logger(__name__)
 
 
-def to(tensor: Union[torch.Tensor, list[torch.Tensor]], device):
-    if isinstance(tensor, list):
+def to(tensor: Union[torch.Tensor, List[torch.Tensor]], device):
+    if isinstance(tensor, List):
         return [to(t, device) for t in tensor]
     return tensor.to(device) if isinstance(tensor, torch.Tensor) else tensor
 
 
-def pin_memory(tensor: Union[torch.Tensor, list[torch.Tensor]]):
-    if isinstance(tensor, list):
+def pin_memory(tensor: Union[torch.Tensor, List[torch.Tensor]]):
+    if isinstance(tensor, List):
         return [pin_memory(t) for t in tensor]
     return tensor.pin_memory() if isinstance(tensor, torch.Tensor) else tensor
 
@@ -196,12 +197,14 @@ class NaiveExperienceMaker(ABC):
             experience = experience.to_device("cuda")
             reward = reward.to(device="cuda")
             num_actions = experience.info["num_actions"]
-            reward = compute_reward(
+            num_steps = experience.info["step_length"]
+            reward = compute_prm_reward(
                 reward,
                 self.kl_ctl.value,
                 experience.kl,
                 action_mask=experience.action_mask,
                 num_actions=num_actions,
+                num_steps=num_steps,
                 reward_clip_range=args.reward_clip_range,
             )
 
@@ -345,6 +348,7 @@ class NaiveExperienceMaker(ABC):
         """
         args = self.strategy.args
         # reward shaping for RLOO
+        # prm暂不支持RLOO，请勿使用
         if args.advantage_estimator == "rloo":
             rewards = torch.cat([experience.info["reward"] for experience in experiences])
             rewards = rewards.reshape(-1, args.n_samples_per_prompt).to(device="cuda")
@@ -353,7 +357,7 @@ class NaiveExperienceMaker(ABC):
             rewards = rewards.flatten().to(device="cpu").chunk(len(experiences))
             return experiences, rewards
         # default rewards
-        return experiences, [experience.info["reward"] for experience in experiences]
+        return experiences, [experience.info["reward_list"] for experience in experiences]
 
     @torch.no_grad()
     def get_advantages_and_returns(
@@ -463,6 +467,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         super().__init__(*args, **kwargs)
         self.vllm_engines = vllm_engines
         self.packing_samples = packing_samples
+        self.placeholder_token_id = self.strategy.args.placeholder_token_id
 
     @torch.no_grad()
     def make_experience_list(self, all_prompts: Union[str, List[str]], **generate_kwargs) -> List[Experience]:
@@ -573,7 +578,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         if value is not None:
             value = value.to(device)
         rewards = [r.to(device) for r in rewards]
-        r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+        # 这里的reward_fn将多个reward进行合并，不传weights参数的话默认是把多个reward加起来
+        r = self.reward_fn(rewards, weights=None) if len(rewards) > 0 else rewards[0]
+        # 只取action部分的reward
+        r = r[:, -num_actions:]
 
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
@@ -603,29 +611,86 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             kl = unpacking_samples(kl, num_actions)
             kl_mean = torch.tensor([each_kl.mean() for each_kl in kl], device=device)
 
+        joint_action_log_probs, joint_base_action_log_probs, joint_value, joint_action_mask = self.step_level_merge(
+            sequences,
+            action_log_probs,
+            base_action_log_probs,
+            action_mask,
+            num_actions,
+            value,
+        )
+        joint_kl = compute_approx_kl(
+            joint_action_log_probs,
+            joint_base_action_log_probs,
+            action_mask=joint_action_mask,
+            use_kl_estimator_k3=self.strategy.args.use_kl_estimator_k3,
+        )
+        joint_kl_mean  = masked_mean(joint_kl, joint_action_mask, dim=-1)
+        step_length = joint_action_mask.float().sum(dim=-1)
+
         info = {
             "kl": kl_mean,
-            "reward": r,
+            "joint_kl": joint_kl_mean, 
+            "reward": r.sum(dim=-1),
+            "reward_list": r,
             "response_length": samples.response_length,
             "total_length": samples.total_length,
+            "step_length": step_length,
             "num_actions": num_actions,
         }
 
+        # print(f"""💚 💚 💚 💚 💚 [Debug Info]
+        #     sequences = {sequences},
+        #     action_log_probs = {action_log_probs},
+        #     base_action_log_probs = {base_action_log_probs},
+        #     action_mask = {action_mask},
+        #     num_actions = {num_actions},
+        #     value = {value},
+        #     joint_action_log_probs = {joint_action_log_probs},
+        #     joint_base_action_log_probs = {joint_base_action_log_probs},
+        #     joint_value = {joint_value}, 
+        #     joint_action_mask = {joint_action_mask},
+        #     "kl": {kl_mean},
+        #     "joint_kl": {joint_kl_mean}, 
+        #     "reward": {r.sum(dim=-1)},
+        #     "reward_list": {r},
+        #     "response_length": {samples.response_length},
+        #     "total_length": {samples.total_length},
+        #     "step_length": {step_length},
+        #     "num_actions": {num_actions},
+        #     """)
+        
         if self.strategy.args.perf:
             self.perf_stats["actor_value_rm_time"] += actor_value_rm_time
             self.perf_stats["wait_time"] += wait_time
 
-        experience = Experience(
-            sequences,
-            action_log_probs,
-            value,
-            None,
-            None,
-            attention_mask,
-            action_mask,
-            info,
-            kl,
-        )
+        # 根据action_level来决定experience的内容
+        if self.strategy.args.action_level == "token":
+            experience = Experience(
+                sequences,
+                action_log_probs,
+                value,
+                None,
+                None,
+                attention_mask,
+                action_mask,
+                info,
+                kl,
+            )
+        elif self.strategy.args.action_level == "step":
+            experience = Experience(
+                sequences,
+                joint_action_log_probs,
+                joint_value,
+                None,
+                None,
+                attention_mask,
+                joint_action_mask,
+                info,
+                joint_kl,
+            )
+        else:
+            print("Unsupported action_level")
 
         self.actor.train()  # reset model state
         return experience
@@ -763,3 +828,41 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         if self.critic is not None:
             ray.get(self._ref)
             self._ref = None
+    
+    def step_level_merge(self,
+        sequences,
+        action_log_probs,
+        base_action_log_probs,
+        action_mask,
+        num_actions,
+        value
+    ):
+        # 创建joint_action_mask，只在placeholder的位置置1
+        actions = sequences[:, -num_actions:]
+        batch_indices, step_indices = (actions == self.placeholder_token_id).nonzero(as_tuple=True)
+        joint_action_mask = torch.zeros_like(action_mask)
+        joint_action_mask[batch_indices,step_indices] = 1
+
+        # 创建step_mask来标记每个step内的所有token
+        step_mask = torch.cumsum(joint_action_mask, dim=1)
+        step_mask = torch.cat([torch.zeros_like(step_mask[:, :1]), step_mask[:, :-1]], dim=1)
+
+        # 计算joint_action_log_probs和joint_base_action_log_probs
+        joint_action_log_probs = torch.zeros_like(action_log_probs)
+        joint_base_action_log_probs = torch.zeros_like(base_action_log_probs)
+        for i in range(step_mask.max().item() + 1):
+            mask = (step_mask == i)
+            step_sum = (action_log_probs * mask).sum(dim=1, keepdim=True)
+            joint_action_log_probs += step_sum.expand_as(mask) * mask
+            base_step_sum = (base_action_log_probs * mask).sum(dim=1, keepdim=True)
+            joint_base_action_log_probs += base_step_sum.expand_as(mask) * mask
+
+        joint_action_log_probs = joint_action_log_probs * joint_action_mask
+        joint_base_action_log_probs = joint_base_action_log_probs * joint_action_mask
+        joint_value = value * joint_action_mask
+
+        return joint_action_log_probs, joint_base_action_log_probs, joint_value, joint_action_mask
+
+        
+
+    

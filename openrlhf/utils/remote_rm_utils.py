@@ -13,12 +13,15 @@ def request_api_wrapper(url, data, score_key="rewards", try_max_times=5):
     headers = {
         "Content-Type": "application/json",
     }
-    for _ in range(try_max_times):
+    for i in range(try_max_times):
         try:
-            response = requests.post(url=url, json=data, headers=headers, timeout=180)
+            # 容忍超长的推理步骤（比如98 steps），生成式rm会非常慢
+            response = requests.post(url=url, json=data, headers=headers, timeout=600) 
             response.raise_for_status()  # Raise an HTTPError for bad responses
             response = response.json()
             assert score_key in response, f"{score_key} not in {response}"
+            if(i>0):
+                logger.info(f"Request success after {i+1} times retry.")
             return response.get(score_key)
         except requests.RequestException as e:
             logger.info(f"Request error, please check: {e}")

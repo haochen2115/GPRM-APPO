@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import deepspeed
 import torch
@@ -219,9 +219,12 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
             else:
                 eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                eos_indices = eos_indices.to(values.device)
                 reward = values.gather(dim=1, index=eos_indices).squeeze(1)
 
             if not self.training and self.normalize_reward:
+                self.mean = self.mean.to(reward.device)
+                self.std = self.std.to(reward.device)
                 reward = (reward - self.mean) / self.std
 
             return (reward, outputs) if return_output else reward
@@ -255,7 +258,7 @@ def _get_critic_model(base_pretrained_model, base_llm_model, value_head_prefix="
         def forward(
             self,
             input_ids: torch.LongTensor = None,
-            num_actions: Optional[Union[int, list[int]]] = None,
+            num_actions: Optional[Union[int, List[int]]] = None,
             attention_mask: Optional[torch.Tensor] = None,
             return_output=False,
             packed_seq_lens=None,

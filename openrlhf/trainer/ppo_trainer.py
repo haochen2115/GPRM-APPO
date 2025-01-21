@@ -403,13 +403,23 @@ class PPOTrainer(ABC):
         status = {"policy_loss": actor_loss.item(), "actor_lr": self.actor_scheduler.get_last_lr()[0]}
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
+        
+        # print(f"""💚 💚 💚 💚 💚 [Debug Info]
+        #     experience.info = {experience.info}
+        # """)
+
         for k, v in experience.info.items():
-            if k == "kl":
+            if k == "kl" or k == "joint_kl":
                 status[k] = (
                     (v * experience.info["response_length"]).sum() / experience.info["response_length"].sum()
                 ).item()
             else:
-                status[k] = v.mean().item()
+                try:
+                    status[k] = v.mean().item()
+                except Exception as e:
+                    print(f"Exception: {e}\ncurrent processing info items: {k} and value is {v}")
+                    raise
+
         return status
 
     def training_step_critic(self, experience: Experience) -> Dict[str, float]:

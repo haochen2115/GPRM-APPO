@@ -86,7 +86,7 @@ class ReferenceModelRayActor(BasePPORole):
         num_actions: int = None,
         attention_mask: Optional[torch.Tensor] = None,
         return_output=False,
-        packed_seq_lens: Optional[list[int]] = None,
+        packed_seq_lens: Optional[List[int]] = None,
     ) -> torch.Tensor:
         device = torch.cuda.current_device()
         with torch.no_grad():

@@ -18,9 +18,11 @@ from openrlhf.utils import get_strategy
 
 
 # NOTE: reward function for multiple reward models, replace this with your own function!
-def reward_fn(rewards: List[torch.Tensor]):
-    return torch.stack(rewards).sum(dim=0)
-
+def reward_fn(rewards: List[torch.Tensor], weights: None):
+    if weights is None:
+        weights = [1.0] * len(rewards)
+    weighted_rewards = sum(reward * weight for reward, weight in zip(rewards, weights))
+    return weighted_rewards
 
 def _validate_args(args):
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -354,6 +356,9 @@ if __name__ == "__main__":
 
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)
+
+    parser.add_argument("--placeholder_token_id", type=int, default=None)
+    parser.add_argument("--action_level", type=str, default="token", help="token or step")
 
     args = parser.parse_args()
 

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import torch
 import torch.distributed as dist
@@ -289,7 +289,7 @@ class PRMLoss(nn.Module):
     Process Reward Model Loss
     """
 
-    def __init__(self, placeholder_token_id: int, reward_token_ids: Optional[list[int]] = None):
+    def __init__(self, placeholder_token_id: int, reward_token_ids: Optional[List[int]] = None):
         super().__init__()
         self.IGNORE_INDEX = -100
         self.loss = nn.CrossEntropyLoss(ignore_index=self.IGNORE_INDEX)

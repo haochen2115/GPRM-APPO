@@ -16,8 +16,11 @@ from openrlhf.trainer.ppo_utils import Experience, RemoteExperienceMaker
 from openrlhf.utils import blending_datasets, get_tokenizer
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.distributed_util import init_process_group
+from openrlhf.utils.logging_utils import init_logger
 
 from .launcher import BasePPORole
+
+logger = init_logger(__name__)
 
 
 class ActorPPOTrainer(PPOTrainer):
@@ -69,10 +72,13 @@ class ActorPPOTrainer(PPOTrainer):
         #   1. AllGather paramters to rank 0
         #   2. Broadcast parameters from rank 0 to all vllm engines
         if self.vllm_engines is not None and torch.distributed.get_rank() == 0:
-            master_address = ray._private.services.get_node_ip_address()
+            master_address = os.environ.get("MASTER_ADDR", ray._private.services.get_node_ip_address())
+            logger.info(f"MASTER_ADDR is: {master_address}")
             with socket.socket() as sock:
                 sock.bind(("", 0))
                 master_port = sock.getsockname()[1]
+            master_port = int(os.environ.get("MASTER_PORT", master_port))
+            logger.info(f"MASTER_PORT is: {master_port}")
 
             vllm_num_engines, vllm_tensor_parallel_size = (
                 self.strategy.args.vllm_num_engines,

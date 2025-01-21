@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 import torch
 import torch.nn.functional as F
@@ -37,11 +37,11 @@ def compute_approx_kl(
 def compute_reward(
     r: Union[torch.Tensor, float],
     kl_coef: float,
-    kl: Union[torch.Tensor, list[torch.Tensor]],
+    kl: Union[torch.Tensor, List[torch.Tensor]],
     action_mask: Optional[torch.Tensor] = None,
-    num_actions: Optional[Union[int, list[int]]] = None,
+    num_actions: Optional[Union[int, List[int]]] = None,
     reward_clip_range: Tuple[float, float] = None,
-) -> Union[torch.Tensor, list[torch.Tensor]]:
+) -> Union[torch.Tensor, List[torch.Tensor]]:
     if kl_coef <= 0.0:
         kl_coef = 0.0
 
@@ -73,6 +73,32 @@ def compute_reward(
 
     return reward
 
+def compute_prm_reward(
+    r: Union[torch.Tensor, float],
+    kl_coef: float,
+    kl: Union[torch.Tensor, List[torch.Tensor]],
+    action_mask: Optional[torch.Tensor] = None,
+    num_actions: Optional[Union[int, List[int]]] = None,
+    num_steps: Optional[torch.Tensor] = None,
+    reward_clip_range: Tuple[float, float] = None,
+    max_desired_steps: int = 50,
+    step_length_penalty: float = 0.0,
+    
+) -> Union[torch.Tensor, List[torch.Tensor]]:
+    assert num_steps is not None, "🚨 🚨 🚨 🚨 🚨 prm奖励计算必须传入num_steps！"
+    if kl_coef <= 0.0:
+        kl_coef = 0.0
+
+    if reward_clip_range:
+        r = r.clamp(min=reward_clip_range[0], max=reward_clip_range[1])
+
+    step_penalty_per_action = torch.clamp(num_steps - max_desired_steps, min=0) * step_length_penalty  # shape: (batch_size,)
+    step_penalty = step_penalty_per_action.unsqueeze(-1) * action_mask
+    kl_reward = -kl_coef * kl
+    assert r.shape == kl_reward.shape, f"🚨 🚨 🚨 🚨 🚨 r的形状: {r.shape}, kl_reward的形状: {kl_reward.shape}"
+    reward = r + kl_reward - step_penalty
+
+    return reward
 
 def log_probs_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     log_probs = F.log_softmax(logits, dim=-1)
@@ -110,7 +136,7 @@ def reset_position_ids(attention_mask):
     return position_ids
 
 
-def unpacking_samples(values: torch.Tensor, packed_seqlens: list[int]):
+def unpacking_samples(values: torch.Tensor, packed_seqlens: List[int]):
     values = values.squeeze(0)
     unpacked_values = []
     offset = 0

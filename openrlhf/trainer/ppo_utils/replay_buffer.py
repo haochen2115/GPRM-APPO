@@ -63,15 +63,24 @@ def split_experience_batch(experience: Experience) -> List[BufferItem]:
 
     for i in range(batch_size):
         batch_kwargs[i]["info"] = {}
+    # print(f"""💙 💙 💙 💙 💙 [Debug Info]
+    #       experience.info = {experience.info}
+    # """)
     for k, v in experience.info.items():
         vals = torch.unbind(v)
         assert batch_size == len(vals)
         for i, vv in enumerate(vals):
-            if isinstance(vv, torch.Tensor):
-                assert vv.numel() == 1, f"info[{k}] must be a scalar tensor, but got {vv.shape}"
-                vv = vv.item()
-            batch_kwargs[i]["info"][k] = vv
-
+            # if isinstance(vv, torch.Tensor):
+            #     assert vv.numel() == 1, f"info[{k}] must be a scalar tensor, but got {vv.shape}"
+            #     vv = vv.item()
+            # batch_kwargs[i]["info"][k] = vv
+            if vv.numel() > 1:
+                batch_kwargs[i]["info"][k] = vv  # 保持为张量
+            else:
+                batch_kwargs[i]["info"][k] = vv.item()
+    # print(f"""💙 💙 💙 💙 💙 [Debug Info]
+    #       batch_kwargs[0]["info"] = {batch_kwargs[0]["info"]}
+    # """)
     items = [BufferItem(**kwargs) for kwargs in batch_kwargs]
     return items
 
@@ -106,10 +115,23 @@ def make_experience_batch(items: List[BufferItem], packing_samples=False) -> Exp
             batch_data = vals if vals[0] is not None else None
         kwargs[key] = batch_data
 
+    
     kwargs["info"] = {}
+    # print(f"""💚 💚 💚 💚 💚 [Debug Info]
+    #       items[0].info = {items[0].info}
+    # """)
     for key in items[0].info.keys():
-        vals = torch.tensor([item.info[key] for item in items])
-        kwargs["info"][key] = vals
+        # vals = torch.tensor([item.info[key] for item in items])
+        # kwargs["info"][key] = vals
+        vals = [item.info[key] for item in items]
+        if isinstance(vals[0], torch.Tensor):
+            batch_data = zero_pad_sequences(vals, "left")
+        else:
+            batch_data = torch.tensor(vals)
+        kwargs["info"][key] = batch_data
+    # print(f"""💚 💚 💚 💚 💚 [Debug Info]
+    #       kwargs["info"] = {kwargs["info"]}
+    # """)
     return Experience(**kwargs)
 
 
